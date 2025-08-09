@@ -1,0 +1,330 @@
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX - Enhanced Claude Code Container
+# Production-grade AI agent platform with comprehensive integrations
+# =============================================================================
+
+FROM node:20-slim
+
+# =============================================================================
+# METADATA AND LABELS
+# =============================================================================
+LABEL maintainer="Solution-Automater-Sandbox Team"
+LABEL version="1.0.0"
+LABEL description="Production-grade AI agent orchestration platform"
+LABEL org.opencontainers.image.title="Solution-Automater-Sandbox"
+LABEL org.opencontainers.image.description="Enterprise AI agent platform with security, monitoring, and cloud integrations"
+LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.vendor="Solution-Automater-Sandbox"
+
+# =============================================================================
+# SYSTEM DEPENDENCIES AND SECURITY HARDENING
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    # Core development tools
+    git \
+    curl \
+    wget \
+    python3 \
+    python3-pip \
+    python3-venv \
+    build-essential \
+    sudo \
+    # Security and monitoring tools
+    netcat-openbsd \
+    net-tools \
+    htop \
+    procps \
+    # Cloud and database tools
+    postgresql-client \
+    mysql-client \
+    mongodb-clients \
+    # Container and orchestration tools
+    docker.io \
+    # SSL/TLS and crypto
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    # Network utilities
+    iproute2 \
+    iptables \
+    # Text processing and utilities
+    jq \
+    yq \
+    vim \
+    nano \
+    zip \
+    unzip \
+    # Performance and debugging
+    strace \
+    tcpdump \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install additional system packages if specified
+ARG SYSTEM_PACKAGES=""
+RUN if [ -n "$SYSTEM_PACKAGES" ]; then \
+    echo "Installing additional system packages: $SYSTEM_PACKAGES" && \
+    apt-get update && \
+    apt-get install -y $SYSTEM_PACKAGES && \
+    rm -rf /var/lib/apt/lists/*; \
+else \
+    echo "No additional system packages specified"; \
+fi
+
+# =============================================================================
+# USER CREATION AND SECURITY CONFIGURATION
+# =============================================================================
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN if getent group $USER_GID > /dev/null 2>&1; then \
+        GROUP_NAME=$(getent group $USER_GID | cut -d: -f1); \
+    else \
+        groupadd -g $USER_GID sas-user && GROUP_NAME=sas-user; \
+    fi && \
+    useradd -m -s /bin/bash -u $USER_UID -g $GROUP_NAME sas-user && \
+    echo "sas-user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    # Add sas-user to docker group for container orchestration
+    groupadd -f docker && \
+    usermod -aG docker sas-user
+
+# =============================================================================
+# APPLICATION DIRECTORY AND CORE TOOLS
+# =============================================================================
+WORKDIR /app
+
+# Install Claude Code globally with latest version
+RUN npm install -g @anthropic-ai/claude-code@latest
+
+# Install additional Node.js tools for development and monitoring
+RUN npm install -g \
+    pm2 \
+    nodemon \
+    typescript \
+    ts-node \
+    @types/node \
+    eslint \
+    prettier
+
+# Ensure npm global bin is in PATH
+ENV PATH="/usr/local/bin:${PATH}"
+
+# =============================================================================
+# PYTHON ENVIRONMENT AND TOOLS
+# =============================================================================
+# Install Python package manager and common packages
+RUN python3 -m pip install --upgrade pip setuptools wheel && \
+    python3 -m pip install \
+    # Core Python tools
+    pipx \
+    poetry \
+    # Database clients
+    psycopg2-binary \
+    pymongo \
+    mysql-connector-python \
+    sqlalchemy \
+    # Cloud SDKs
+    azure-identity \
+    azure-storage-blob \
+    boto3 \
+    google-cloud-storage \
+    # Monitoring and observability
+    prometheus-client \
+    opentelemetry-api \
+    opentelemetry-sdk \
+    # Security and crypto
+    cryptography \
+    PyJWT \
+    # Utilities
+    requests \
+    pyyaml \
+    click \
+    rich \
+    typer \
+    # Development tools
+    black \
+    flake8 \
+    mypy \
+    pytest
+
+# =============================================================================
+# DIRECTORY STRUCTURE CREATION
+# =============================================================================
+RUN mkdir -p \
+    /app/.claude \
+    /app/configs \
+    /app/scripts \
+    /app/templates \
+    /app/logs \
+    /home/sas-user/.claude \
+    /home/sas-user/scripts \
+    /home/sas-user/.config \
+    /home/sas-user/.cache \
+    /home/sas-user/.local/bin \
+    /tmp/sas-sessions \
+    /var/log/sas
+
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX CORE FILES
+# =============================================================================
+# Copy startup script
+COPY src/startup.sh /app/
+COPY scripts/sas-startup.sh /app/
+RUN chmod +x /app/startup.sh /app/sas-startup.sh
+
+# Copy enhanced .claude configuration
+COPY .claude /app/.claude
+COPY configs/sas-claude-config.json /app/.claude/settings.json
+
+# Copy environment configuration
+COPY .env.solution-automater-sandbox /app/.env
+
+# Copy project-specific CLAUDE.md with enhanced capabilities
+COPY configs/CLAUDE-SAS.md /home/sas-user/.claude/CLAUDE.md
+
+# Copy authentication files from host (must exist)
+COPY .claude.json /tmp/.claude.json
+
+# =============================================================================
+# MCP SERVERS AND INTEGRATIONS
+# =============================================================================
+COPY mcp-servers.txt /app/
+COPY install-mcp-servers.sh /app/
+COPY scripts/install-sas-mcp-servers.sh /app/
+RUN chmod +x /app/install-mcp-servers.sh /app/install-sas-mcp-servers.sh
+
+# =============================================================================
+# CLOUD INTEGRATION COMPONENTS
+# =============================================================================
+COPY src/cloud_integration /app/cloud_integration/
+COPY configs/cloud-config.yaml /app/configs/
+
+# =============================================================================
+# ORCHESTRATION AND MANAGEMENT TOOLS
+# =============================================================================
+COPY src/orchestration /app/orchestration/
+COPY scripts/sas-orchestration-tools.sh /app/
+RUN chmod +x /app/sas-orchestration-tools.sh
+
+# =============================================================================
+# MONITORING AND OBSERVABILITY SETUP
+# =============================================================================
+COPY configs/monitoring /app/monitoring/
+COPY scripts/setup-monitoring.sh /app/
+RUN chmod +x /app/setup-monitoring.sh
+
+# =============================================================================
+# SECURITY CONFIGURATION
+# =============================================================================
+COPY security-architecture/agent-configs /app/security/
+COPY configs/security-policy.yaml /app/configs/
+
+# =============================================================================
+# CLI TOOLS AND UTILITIES
+# =============================================================================
+COPY bin/sas /usr/local/bin/
+COPY scripts/sas-* /home/sas-user/scripts/
+RUN chmod +x /usr/local/bin/sas /home/sas-user/scripts/sas-*
+
+# =============================================================================
+# HEALTH CHECK AND MONITORING SETUP
+# =============================================================================
+COPY scripts/health-check.sh /app/
+RUN chmod +x /app/health-check.sh
+
+# Install health check dependencies
+RUN python3 -m pip install psutil docker
+
+# =============================================================================
+# FILE PERMISSIONS AND OWNERSHIP
+# =============================================================================
+# Move auth files to proper location before switching user
+RUN cp /tmp/.claude.json /home/sas-user/.claude.json && \
+    rm -f /tmp/.claude.json
+
+# Set proper ownership for everything
+RUN chown -R sas-user:sas-user /app /home/sas-user /var/log/sas
+
+# =============================================================================
+# USER SWITCH AND ENVIRONMENT SETUP
+# =============================================================================
+USER sas-user
+
+# Set HOME immediately after switching user
+ENV HOME=/home/sas-user
+
+# Install uv (Astral) for sas-user - latest Python package manager
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# =============================================================================
+# PATH AND ENVIRONMENT CONFIGURATION
+# =============================================================================
+ENV PATH="/home/sas-user/scripts:/home/sas-user/.local/bin:/home/sas-user/.cargo/bin:${PATH}"
+ENV PYTHONPATH="/home/sas-user/scripts:/app:/app/cloud_integration:/app/orchestration:${PYTHONPATH}"
+
+# Solution-Automater-Sandbox specific environment variables
+ENV SAS_HOME="/home/sas-user"
+ENV SAS_CONFIG_DIR="/app/configs"
+ENV SAS_SCRIPTS_DIR="/home/sas-user/scripts"
+ENV SAS_LOGS_DIR="/var/log/sas"
+ENV SAS_VERSION="1.0.0"
+
+# =============================================================================
+# MCP SERVERS INSTALLATION
+# =============================================================================
+RUN /app/install-sas-mcp-servers.sh
+
+# =============================================================================
+# GIT CONFIGURATION
+# =============================================================================
+ARG GIT_USER_NAME=""
+ARG GIT_USER_EMAIL=""
+RUN if [ -n "$GIT_USER_NAME" ] && [ -n "$GIT_USER_EMAIL" ]; then \
+        echo "Configuring git user from host: $GIT_USER_NAME <$GIT_USER_EMAIL>" && \
+        git config --global user.name "$GIT_USER_NAME" && \
+        git config --global user.email "$GIT_USER_EMAIL" && \
+        git config --global init.defaultBranch main && \
+        git config --global pull.rebase false && \
+        echo "Git configuration complete"; \
+    else \
+        echo "Warning: No git user configured on host system"; \
+        echo "Run 'git config --global user.name \"Your Name\"' and 'git config --global user.email \"you@example.com\"' on host first"; \
+    fi
+
+# =============================================================================
+# DEVELOPMENT AND DEBUGGING TOOLS SETUP
+# =============================================================================
+# Create aliases and helper functions
+RUN echo 'alias ll="ls -la"' >> ~/.bashrc && \
+    echo 'alias sas-status="curl -s http://localhost:8080/health | jq ."' >> ~/.bashrc && \
+    echo 'alias sas-logs="tail -f /var/log/sas/*.log"' >> ~/.bashrc && \
+    echo 'alias docker-ps="docker ps --format \"table {{.Names}}\\t{{.Status}}\\t{{.Ports}}\""' >> ~/.bashrc
+
+# =============================================================================
+# WORKSPACE SETUP
+# =============================================================================
+WORKDIR /workspace
+
+# =============================================================================
+# RUNTIME CONFIGURATION
+# =============================================================================
+# Environment variables for production
+ENV NODE_ENV=production
+ENV SAS_MODE=production
+ENV MONITORING_ENABLED=true
+ENV SECURITY_ENABLED=true
+ENV MULTI_AGENT_ENABLED=true
+
+# =============================================================================
+# HEALTH CHECK CONFIGURATION
+# =============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD /app/health-check.sh
+
+# =============================================================================
+# EXPOSURE AND NETWORKING
+# =============================================================================
+EXPOSE 8080 8090 8091 8092 8093
+
+# =============================================================================
+# ENTRYPOINT AND STARTUP
+# =============================================================================
+ENTRYPOINT ["/app/sas-startup.sh"]

@@ -1,0 +1,197 @@
+# Cloud Integration Configuration
+# This file configures multi-cloud access for the Solution-Automater-Sandbox
+
+# Organization Information
+organization: "Solution-Automater"
+environment: "production"
+
+# Cloud Provider Configurations
+providers:
+  # Microsoft Fabric Configuration
+  fabric:
+    workspace_id: "${FABRIC_WORKSPACE_ID}"
+    lakehouse_id: "${FABRIC_LAKEHOUSE_ID}"
+    sql_endpoint: "${FABRIC_SQL_ENDPOINT}"
+    tenant_id: "${AZURE_TENANT_ID}"
+    client_id: "${AZURE_CLIENT_ID}"
+    client_secret: "${AZURE_CLIENT_SECRET}"
+    auth_method: "service_principal"
+    connection_timeout: 30
+    query_timeout: 300
+    max_pool_size: 10
+    enable_caching: true
+    cache_ttl: 3600
+
+  # AWS Configuration
+  aws:
+    region: "us-east-1"
+    profile: "default"  # Uses AWS CLI default profile
+    s3_backup_bucket: "solution-automater-backups"
+    s3_artifact_bucket: "solution-automater-artifacts"
+    enable_encryption: true
+    max_pool_connections: 50
+    connection_timeout: 30
+    retry_attempts: 3
+    enable_cost_tracking: true
+    
+    # RDS Connection Pools
+    rds_connection_pools:
+      main_db:
+        host: "${RDS_MAIN_HOST}"
+        port: 3306
+        user: "${RDS_MAIN_USER}"
+        password: "${RDS_MAIN_PASSWORD}"
+        database: "${RDS_MAIN_DATABASE}"
+        pool_size: 5
+        ssl_ca: "/path/to/rds-ca-cert.pem"
+        ssl_verify_cert: true
+        autocommit: true
+        
+    # MongoDB Clusters on EC2
+    mongodb_clusters:
+      primary_cluster:
+        - "${MONGODB_NODE1}:27017"
+        - "${MONGODB_NODE2}:27017"
+        - "${MONGODB_NODE3}:27017"
+
+  # Azure Configuration (for services beyond Fabric)
+  azure:
+    subscription_id: "${AZURE_SUBSCRIPTION_ID}"
+    resource_group: "${AZURE_RESOURCE_GROUP}"
+    key_vault_url: "${AZURE_KEY_VAULT_URL}"
+
+# Data Synchronization Jobs
+data_sync:
+  - source_provider: "fabric"
+    source_resource: "toner_features"
+    target_provider: "aws"
+    target_resource: "s3:data-lake/toner_features/"
+    sync_type: "incremental"
+    schedule: "0 */6 * * *"  # Every 6 hours
+    filters:
+      is_active: true
+    transformations:
+      - type: "filter"
+        expression: "AuditDate >= '2024-01-01'"
+    conflict_resolution: "source_wins"
+    enable_validation: true
+    retention_days: 7
+
+  - source_provider: "aws"
+    source_resource: "rds:main_db.customers"
+    target_provider: "fabric"
+    target_resource: "customer_dimension"
+    sync_type: "full"
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    enable_validation: true
+
+# Disaster Recovery Configuration
+disaster_recovery:
+  - primary_region: "us-east-1"
+    dr_region: "us-west-2"
+    rpo_minutes: 60
+    rto_minutes: 240
+    backup_schedule: "0 */4 * * *"
+    enable_auto_failover: false
+    failover_threshold: 3
+    test_schedule: "0 0 1 * *"  # Monthly
+
+# Security Configuration
+security:
+  # Key Management
+  key_stores:
+    aws:
+      region: "us-east-1"
+      kms_key_id: "${AWS_KMS_KEY_ID}"
+    azure:
+      vault_url: "${AZURE_KEY_VAULT_URL}"
+      
+  # Compliance Rules
+  compliance_rules:
+    soc2:
+      - id: "soc2-encryption"
+        description: "All data must be encrypted at rest and in transit"
+        severity: "critical"
+        
+    hipaa:
+      - id: "hipaa-access-control"
+        description: "Access must be role-based with audit logging"
+        severity: "critical"
+        
+    gdpr:
+      - id: "gdpr-data-retention"
+        description: "Personal data must have retention policies"
+        severity: "high"
+
+# Monitoring Configuration
+monitoring:
+  # AWS CloudWatch
+  aws:
+    region: "us-east-1"
+    namespace: "SolutionAutomater"
+    
+  # Azure Monitor
+  azure:
+    workspace_id: "${AZURE_LOG_ANALYTICS_WORKSPACE_ID}"
+    
+  # Alert Notifications
+  notifications:
+    email:
+      smtp_host: "${SMTP_HOST}"
+      smtp_port: 587
+      smtp_user: "${SMTP_USER}"
+      smtp_password: "${SMTP_PASSWORD}"
+      from_address: "alerts@solution-automater.com"
+      to_addresses:
+        - "admin@solution-automater.com"
+        
+    slack:
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+      channel: "#alerts"
+      
+    pagerduty:
+      api_key: "${PAGERDUTY_API_KEY}"
+      service_key: "${PAGERDUTY_SERVICE_KEY}"
+
+# Cost Optimization Rules
+cost_optimization:
+  # Budget Alerts
+  budgets:
+    - name: "monthly_total"
+      amount: 10000
+      currency: "USD"
+      alert_threshold: 80  # Alert at 80% of budget
+      
+  # Resource Optimization
+  optimization_rules:
+    - resource_type: "compute"
+      idle_threshold_percent: 10
+      idle_duration_hours: 24
+      action: "recommend_downsize"
+      
+    - resource_type: "storage"
+      access_pattern: "infrequent"
+      days_since_access: 90
+      action: "recommend_archive"
+
+# Network Security
+network_security:
+  # Allowed IP Ranges
+  allowed_ip_ranges:
+    - "10.0.0.0/8"     # Internal network
+    - "172.16.0.0/12"  # Internal network
+    - "${OFFICE_IP}/32" # Office IP
+    
+  # Blocked Ports
+  blocked_ports:
+    - 21   # FTP
+    - 23   # Telnet
+    - 135  # RPC
+    - 139  # NetBIOS
+    - 445  # SMB
+    
+  # VPC Configuration
+  vpc_config:
+    enable_flow_logs: true
+    enable_network_acls: true
+    enable_security_groups: true

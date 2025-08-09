@@ -1,0 +1,94 @@
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX ORCHESTRATOR
+# Multi-agent orchestration and workflow management service
+# =============================================================================
+
+FROM python:3.11-slim
+
+# =============================================================================
+# METADATA
+# =============================================================================
+LABEL maintainer="Solution-Automater-Sandbox Team"
+LABEL version="1.0.0"
+LABEL description="Multi-agent orchestration service"
+
+# =============================================================================
+# SYSTEM DEPENDENCIES
+# =============================================================================
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    docker.io \
+    netcat-openbsd \
+    redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# =============================================================================
+# PYTHON ENVIRONMENT
+# =============================================================================
+RUN pip install --no-cache-dir \
+    fastapi \
+    uvicorn \
+    redis \
+    docker \
+    pydantic \
+    asyncio \
+    aiohttp \
+    pyyaml \
+    jinja2 \
+    prometheus-client \
+    structlog \
+    tenacity \
+    celery \
+    sqlalchemy \
+    alembic \
+    psycopg2-binary
+
+# =============================================================================
+# APPLICATION SETUP
+# =============================================================================
+WORKDIR /app
+
+# Copy orchestrator application
+COPY orchestrator/ /app/
+COPY requirements.txt /app/
+RUN pip install -r requirements.txt
+
+# Create necessary directories
+RUN mkdir -p /var/log/orchestrator /etc/orchestrator /templates
+
+# Copy configuration templates
+COPY config/ /etc/orchestrator/
+COPY templates/ /templates/
+
+# =============================================================================
+# USER AND PERMISSIONS
+# =============================================================================
+RUN useradd -m -s /bin/bash orchestrator && \
+    chown -R orchestrator:orchestrator /app /var/log/orchestrator /etc/orchestrator /templates
+
+USER orchestrator
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+ENV PYTHONPATH=/app
+ENV ORCHESTRATOR_CONFIG=/etc/orchestrator/config.yaml
+ENV LOG_LEVEL=INFO
+ENV PROMETHEUS_PORT=8091
+
+# =============================================================================
+# HEALTH CHECK
+# =============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8090/health || exit 1
+
+# =============================================================================
+# EXPOSE PORTS
+# =============================================================================
+EXPOSE 8090 8091
+
+# =============================================================================
+# ENTRYPOINT
+# =============================================================================
+ENTRYPOINT ["python", "-m", "orchestrator.main"]

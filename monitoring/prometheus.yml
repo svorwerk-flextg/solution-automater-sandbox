@@ -1,0 +1,247 @@
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX PROMETHEUS CONFIGURATION
+# Comprehensive monitoring and metrics collection
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'solution-automater-sandbox'
+    environment: 'production'
+
+rule_files:
+  - "rules/*.yml"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+scrape_configs:
+  # =============================================================================
+  # CORE SOLUTION-AUTOMATER-SANDBOX SERVICES
+  # =============================================================================
+  - job_name: 'sas-core-services'
+    static_configs:
+      - targets:
+        - 'sas-claude-main:8080'
+        - 'sas-orchestrator:8090'
+        - 'sas-security-gateway:8001'
+        - 'sas-session-manager:8080'
+    scrape_interval: 10s
+    metrics_path: /metrics
+    params:
+      format: ['prometheus']
+
+  - job_name: 'sas-cloud-services'
+    static_configs:
+      - targets:
+        - 'sas-fabric-connector:8091'
+        - 'sas-aws-manager:8092'
+        - 'sas-cloud-orchestrator:8093'
+    scrape_interval: 30s
+    metrics_path: /health
+    params:
+      format: ['prometheus']
+
+  # =============================================================================
+  # DATABASE AND CACHING SERVICES
+  # =============================================================================
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['sas-redis:6379']
+    metrics_path: /
+    scrape_interval: 15s
+
+  - job_name: 'database-proxy'
+    static_configs:
+      - targets: ['sas-db-proxy:8080']
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # =============================================================================
+  # SECURITY AND COMPLIANCE SERVICES
+  # =============================================================================
+  - job_name: 'vault'
+    static_configs:
+      - targets: ['sas-vault:8200']
+    metrics_path: /v1/sys/metrics
+    params:
+      format: ['prometheus']
+    scheme: http
+
+  - job_name: 'audit-logger'
+    static_configs:
+      - targets: ['sas-audit-logger:8080']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # =============================================================================
+  # MONITORING INFRASTRUCTURE
+  # =============================================================================  
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['sas-grafana:3000']
+    scrape_interval: 60s
+    metrics_path: /metrics
+
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['sas-jaeger:16686']
+    scrape_interval: 60s
+    metrics_path: /metrics
+
+  # =============================================================================
+  # SYSTEM LEVEL MONITORING
+  # =============================================================================
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['host.docker.internal:9100']
+    scrape_interval: 15s
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+    scrape_interval: 20s
+    metrics_path: /metrics
+
+  # =============================================================================
+  # DOCKER AND CONTAINER MONITORING
+  # =============================================================================
+  - job_name: 'docker-daemon'
+    static_configs:
+      - targets: ['host.docker.internal:9323']
+    scrape_interval: 30s
+
+  # =============================================================================
+  # APPLICATION SPECIFIC MONITORING
+  # =============================================================================
+  - job_name: 'mcp-servers-health'
+    static_configs:
+      - targets: ['sas-claude-main:8080']
+    scrape_interval: 60s
+    metrics_path: /mcp-health
+    scrape_timeout: 30s
+
+  - job_name: 'agent-pool-metrics'
+    static_configs:
+      - targets: ['sas-orchestrator:8090']
+    scrape_interval: 30s
+    metrics_path: /agents/metrics
+
+  # =============================================================================
+  # CUSTOM METRICS AND BUSINESS LOGIC
+  # =============================================================================
+  - job_name: 'business-metrics'
+    static_configs:
+      - targets: ['sas-orchestrator:8090']
+    scrape_interval: 120s
+    metrics_path: /business-metrics
+    params:
+      include: ['agent_utilization', 'task_completion_rate', 'error_rate']
+
+  - job_name: 'cost-monitoring'
+    static_configs:
+      - targets: ['sas-cloud-orchestrator:8093']
+    scrape_interval: 300s  # 5 minutes
+    metrics_path: /cost-metrics
+    params:
+      include: ['cloud_costs', 'resource_utilization', 'efficiency_metrics']
+
+  # =============================================================================
+  # EXTERNAL SERVICE MONITORING
+  # =============================================================================
+  - job_name: 'claude-api-health'
+    static_configs:
+      - targets: ['api.anthropic.com:443']
+    scrape_interval: 300s
+    metrics_path: /health
+    scheme: https
+    scrape_timeout: 10s
+
+  - job_name: 'openai-api-health'
+    static_configs:
+      - targets: ['api.openai.com:443']
+    scrape_interval: 300s
+    metrics_path: /health
+    scheme: https
+    scrape_timeout: 10s
+
+  # =============================================================================
+  # BLACKBOX MONITORING - ENDPOINT HEALTH CHECKS
+  # =============================================================================
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        - http://sas-claude-main:8080/health
+        - http://sas-orchestrator:8090/health
+        - http://sas-grafana:3000/api/health
+        - http://sas-vault:8200/v1/sys/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: 'blackbox-tcp'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+        - sas-redis:6379
+        - sas-db-proxy:3306
+        - sas-db-proxy:5432
+        - sas-db-proxy:27017
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # =============================================================================
+  # FEDERATION AND REMOTE MONITORING
+  # =============================================================================
+  - job_name: 'federated-prometheus'
+    scrape_interval: 60s
+    honor_labels: true
+    metrics_path: '/federate'
+    params:
+      'match[]':
+        - '{job=~"sas-.*"}'
+        - '{__name__=~"up|sas_.*"}'
+    static_configs:
+      - targets:
+        # - 'remote-prometheus-1:9090'
+        # - 'remote-prometheus-2:9090'
+
+  # =============================================================================
+  # CUSTOM RECORDING RULES FOR PERFORMANCE
+  # =============================================================================
+
+# Custom relabeling for better organization
+relabel_configs:
+  - target_label: 'platform'
+    replacement: 'solution-automater-sandbox'
+
+# Metric relabeling for consistency
+metric_relabel_configs:
+  - source_labels: [__name__]
+    regex: 'container_(.*)'
+    target_label: sas_container_metric
+    replacement: '${1}'

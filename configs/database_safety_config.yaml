@@ -1,0 +1,282 @@
+# Database Safety Layer Configuration
+# Complete configuration template for multi-database safety proxy
+
+# Database Connections
+databases:
+  # Production MSSQL Server (read-only)
+  - name: mssql_production
+    type: mssql
+    connection_string: "Driver={ODBC Driver 17 for SQL Server};Server=prod-sql-server;Database=MainDB;Integrated Security=yes;Encrypt=yes;TrustServerCertificate=no;"
+    environment: production
+    connection_timeout: 30
+    command_timeout: 60
+    min_connections: 5
+    max_connections: 20
+    health_check_interval: 30
+    encrypted: false
+
+  # Development MSSQL Server (read-only)
+  - name: mssql_dev
+    type: mssql
+    connection_string: "Driver={ODBC Driver 17 for SQL Server};Server=dev-sql-server;Database=DevDB;Integrated Security=yes;Encrypt=yes;TrustServerCertificate=no;"
+    environment: dev
+    connection_timeout: 30
+    command_timeout: 60
+    min_connections: 2
+    max_connections: 10
+    health_check_interval: 30
+    encrypted: false
+
+  # MongoDB Replicaset (read-only)
+  - name: mongodb_replica
+    type: mongodb
+    connection_string: "mongodb://user:password@mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0&authSource=admin&readPreference=secondaryPreferred"
+    environment: production
+    connection_timeout: 30
+    command_timeout: 60
+    min_connections: 3
+    max_connections: 15
+    health_check_interval: 30
+    encrypted: false
+
+  # MySQL RDS Instance (read-only)
+  - name: mysql_rds
+    type: mysql
+    connection_string: "mysql://readonly_user:secure_password@mysql-rds-endpoint.amazonaws.com:3306/production_db"
+    environment: production
+    connection_timeout: 30
+    command_timeout: 60
+    min_connections: 3
+    max_connections: 15
+    health_check_interval: 30
+    encrypted: false
+
+  # Microsoft Fabric Lakehouse (read-only)
+  - name: fabric_lakehouse
+    type: fabric
+    connection_string: "https://workspacename.fabric.microsoft.com/v1/workspaces/{workspace-id}/items/{lakehouse-id}/sqlEndpoint"
+    environment: production
+    connection_timeout: 60
+    command_timeout: 120
+    min_connections: 2
+    max_connections: 8
+    health_check_interval: 60
+    encrypted: false
+
+  # Local Sandbox (full CRUD)
+  - name: local_sandbox
+    type: local_sandbox
+    connection_string: "sqlite:///tmp/database_sandbox.db"
+    environment: sandbox
+    connection_timeout: 10
+    command_timeout: 30
+    min_connections: 1
+    max_connections: 5
+    health_check_interval: 60
+    encrypted: false
+
+# Safety Rules Configuration
+safety_rules:
+  # CRITICAL LEVEL RULES (blocked everywhere, including sandbox)
+  - name: block_drop_operations
+    pattern: '\b(drop|truncate)\s+(table|database|schema|collection)\b'
+    risk_level: critical
+    description: "DROP/TRUNCATE operations are destructive and irreversible"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: true  # Even sandbox doesn't allow DROP
+    enabled: true
+
+  - name: block_system_commands
+    pattern: '\b(xp_cmdshell|sp_configure|openrowset|opendatasource|exec\s+xp_|execute\s+xp_)\b'
+    risk_level: critical
+    description: "System command execution via stored procedures"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: true
+    enabled: true
+
+  - name: block_bulk_operations
+    pattern: '\b(bulk\s+insert|load\s+data|restore\s+database|backup\s+database)\b'
+    risk_level: critical
+    description: "Bulk operations can affect system performance"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: true
+    enabled: true
+
+  # DANGEROUS LEVEL RULES (blocked in production/dev)
+  - name: unsafe_deletes
+    pattern: '\bdelete\s+from\s+\w+\s*(?!where)\b'
+    risk_level: dangerous
+    description: "DELETE statements without WHERE clause can remove all data"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: false
+    enabled: true
+
+  - name: unsafe_updates
+    pattern: '\bupdate\s+\w+\s+set\s+.*?(?!where)\b'
+    risk_level: dangerous
+    description: "UPDATE statements without WHERE clause affect all rows"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: false
+    enabled: true
+
+  - name: dynamic_sql_injection
+    pattern: '\b(exec|execute)\s*\(\s*@|\bexec\s+sp_executesql\b'
+    risk_level: dangerous
+    description: "Dynamic SQL execution can be vulnerable to injection"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: false
+    enabled: true
+
+  # MODERATE LEVEL RULES (blocked in production only)
+  - name: system_table_access
+    pattern: '\b(sys\.|information_schema\.|master\.|model\.|msdb\.|tempdb\.)\b'
+    risk_level: moderate
+    description: "Access to system tables and schemas"
+    block_in_production: true
+    block_in_dev: false
+    block_in_sandbox: false
+    enabled: true
+
+  - name: admin_functions
+    pattern: '\b(db_owner|db_securityadmin|db_ddladmin|sysadmin)\b'
+    risk_level: moderate
+    description: "Administrative database functions"
+    block_in_production: true
+    block_in_dev: false
+    block_in_sandbox: false
+    enabled: true
+
+  - name: large_table_scans
+    pattern: '\bselect\s+\*\s+from\s+\w+\s*(?!where|limit|top)\b'
+    risk_level: moderate
+    description: "SELECT * without WHERE/LIMIT can cause performance issues"
+    block_in_production: true
+    block_in_dev: false
+    block_in_sandbox: false
+    enabled: true
+
+  # MongoDB specific rules
+  - name: mongodb_unsafe_operations
+    pattern: '\.(drop|dropDatabase|dropIndex)\s*\('
+    risk_level: dangerous
+    description: "MongoDB drop operations"
+    block_in_production: true
+    block_in_dev: true
+    block_in_sandbox: false
+    enabled: true
+
+  - name: mongodb_bulk_write
+    pattern: '\.(bulkWrite|insertMany|deleteMany)\s*\('
+    risk_level: moderate
+    description: "MongoDB bulk operations can affect performance"
+    block_in_production: true
+    block_in_dev: false
+    block_in_sandbox: false
+    enabled: true
+
+# Connection Pool Settings
+connection_pools:
+  default_pool_size: 10
+  max_pool_size: 50
+  connection_lifetime: 3600  # 1 hour
+  idle_timeout: 300  # 5 minutes
+  pool_timeout: 30
+  health_check_interval: 30
+  max_retries: 3
+  retry_delay: 5
+  load_balance_strategy: round_robin
+
+# Audit and Monitoring Settings
+audit_logging: true
+metrics_enabled: true
+health_check_interval: 30
+
+# Security Settings
+encryption_enabled: false
+encryption_key: null  # Set in environment variable DB_ENCRYPTION_KEY
+
+# Performance Settings
+query_timeout: 300  # 5 minutes
+max_concurrent_queries: 100
+cache_enabled: true
+cache_ttl: 3600  # 1 hour
+
+# Rate Limiting
+rate_limiting:
+  enabled: true
+  requests_per_minute: 1000
+  burst_size: 100
+  per_connection_limit: 50
+
+# Logging Configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "/var/log/database_safety/proxy.log"
+  max_file_size: "100MB"
+  backup_count: 5
+  
+# Alert Settings
+alerts:
+  enabled: true
+  email_notifications: false
+  slack_webhook: null
+  thresholds:
+    error_rate: 0.05  # 5% error rate triggers alert
+    response_time: 5.0  # 5 second response time triggers alert
+    connection_failures: 10  # 10 consecutive failures triggers alert
+
+# Sandbox Settings
+sandbox:
+  base_storage_path: "/tmp/database_sandboxes"
+  max_total_storage_gb: 10
+  max_concurrent_sandboxes: 50
+  default_sample_size: 1000
+  auto_cleanup_enabled: true
+  cleanup_interval_hours: 24
+  
+# Data Masking Settings
+data_masking:
+  default_level: standard  # none, basic, standard, strict, custom
+  preserve_format: true
+  preserve_length: true
+  preserve_null: true
+  confidence_threshold: 0.8
+
+# Feature Flags
+features:
+  mongodb_support: true
+  fabric_support: true
+  sandbox_auto_refresh: true
+  data_masking: true
+  query_caching: true
+  connection_pooling: true
+  
+# Environment-Specific Overrides
+environments:
+  production:
+    query_timeout: 300
+    max_concurrent_queries: 100
+    logging_level: WARN
+    rate_limiting:
+      requests_per_minute: 500
+      
+  development:
+    query_timeout: 600
+    max_concurrent_queries: 200
+    logging_level: INFO
+    rate_limiting:
+      requests_per_minute: 2000
+      
+  testing:
+    query_timeout: 60
+    max_concurrent_queries: 50
+    logging_level: DEBUG
+    rate_limiting:
+      requests_per_minute: 5000

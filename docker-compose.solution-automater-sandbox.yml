@@ -1,0 +1,732 @@
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX - Master Docker Compose Configuration
+# Production-grade AI agent orchestration platform
+# =============================================================================
+
+# version: '3.9'  # Removed as obsolete in Docker Compose v2
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-healthcheck: &default-healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s
+
+x-security-opts: &default-security
+  security_opt:
+    - no-new-privileges:true
+    - apparmor:docker-default
+  cap_drop:
+    - ALL
+
+x-resources: &default-resources
+  deploy:
+    resources:
+      limits:
+        memory: 2G
+        cpus: '1'
+      reservations:
+        memory: 512M
+        cpus: '0.25'
+
+services:
+  # =============================================================================
+  # CORE CLAUDE SANDBOX SERVICE - Enhanced with all integrations
+  # =============================================================================
+  claude-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.solution-automater-sandbox
+      args:
+        USER_UID: ${HOST_UID:-1000}
+        USER_GID: ${HOST_GID:-1000}
+        GIT_USER_NAME: ${GIT_USER_NAME}
+        GIT_USER_EMAIL: ${GIT_USER_EMAIL}
+        SYSTEM_PACKAGES: ${SYSTEM_PACKAGES:-}
+    image: solution-automater-sandbox:latest
+    container_name: sas-claude-main
+    hostname: sas-claude-main
+    restart: unless-stopped
+    networks:
+      - sas-agent-network
+      - sas-proxy-network
+    ports:
+      - "127.0.0.1:8080:8080"  # Claude Code interface
+    environment:
+      - NODE_ENV=production
+      - SAS_MODE=main
+      - AGENT_ID=claude-main-001
+      - SESSION_TIMEOUT=3600
+      - MAX_MEMORY=8G
+      - MAX_CPU=4
+      - DB_SAFETY_ENABLED=true
+      - SECURITY_MODE=production
+      - MONITORING_ENABLED=true
+    volumes:
+      - type: bind
+        source: ${PWD}
+        target: /workspace
+        bind:
+          propagation: cached
+      - sas-claude-home:/home/claude-user/.claude
+      - sas-shared-scripts:/home/claude-user/scripts
+      - sas-session-data:/tmp/sas-sessions
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    env_file:
+      - .env.solution-automater-sandbox
+    logging: *default-logging
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.2'
+    depends_on:
+      db-safety-proxy:
+        condition: service_healthy
+      security-gateway:
+        condition: service_healthy
+      session-manager:
+        condition: service_started
+      redis-cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      <<: *default-healthcheck
+
+  # =============================================================================
+  # MULTI-AGENT ORCHESTRATION SERVICES
+  # =============================================================================
+  agent-orchestrator:
+    build:
+      context: ./orchestration
+      dockerfile: Dockerfile.orchestrator
+    image: sas-orchestrator:latest
+    container_name: sas-orchestrator
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-agent-network
+    ports:
+      - "127.0.0.1:8090:8090"  # Orchestration API
+    environment:
+      - ORCHESTRATOR_MODE=production
+      - MAX_CONCURRENT_AGENTS=10
+      - AGENT_TIMEOUT=3600
+      - LOAD_BALANCING_ENABLED=true
+      - AUTO_SCALING_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sas-orchestration-config:/etc/orchestrator
+      - sas-agent-templates:/templates
+      - sas-orchestration-logs:/var/log/orchestrator
+    logging: *default-logging
+    <<: *default-security
+    depends_on:
+      - vault
+      - redis-cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      <<: *default-healthcheck
+
+  agent-pool-worker:
+    image: solution-automater-sandbox:latest
+    restart: "no"  # Ephemeral agents
+    networks:
+      - sas-agent-network
+    environment:
+      - SAS_MODE=worker
+      - AGENT_TYPE=general
+      - SESSION_ID=${SESSION_ID:-auto}
+      - MAX_MEMORY=4G
+      - MAX_CPU=2
+      - TIMEOUT=3600
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 2G
+      - sas-agent-workspace:/workspace:rw
+      - sas-shared-artifacts:/artifacts:ro
+    <<: *default-security
+    deploy:
+      replicas: 0  # Started by orchestrator on demand
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # =============================================================================
+  # DATABASE SAFETY LAYER - Multi-database proxy with bulletproof safety
+  # =============================================================================
+  db-safety-proxy:
+    build:
+      context: ./docker/database-safety
+      dockerfile: Dockerfile
+    image: sas-db-safety:latest
+    container_name: sas-db-proxy
+    restart: unless-stopped
+    networks:
+      - sas-proxy-network
+      - sas-agent-network
+      - sas-management-network
+    ports:
+      - "127.0.0.1:3306:3306"   # MySQL proxy
+      - "127.0.0.1:1433:1433"   # MSSQL proxy
+      - "127.0.0.1:5432:5432"   # PostgreSQL proxy
+      - "127.0.0.1:27017:27017" # MongoDB proxy
+    environment:
+      - PROXY_MODE=READ_ONLY
+      - AUDIT_ENABLED=true
+      - BLOCK_WRITES=true
+      - LOG_LEVEL=info
+      - ENCRYPTION_ENABLED=true
+      - MULTI_DB_SUPPORT=true
+    volumes:
+      - ./configs/database_safety_config.yaml:/app/config/database_config.yaml:ro
+      - sas-proxy-logs:/var/log/proxy
+      - sas-sandbox-storage:/tmp/database_sandboxes
+      - ./backups:/backups/database_safety
+    env_file:
+      - .env.database_safety
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - NET_BIND_SERVICE
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "3306"]
+      <<: *default-healthcheck
+
+  # =============================================================================
+  # SECURITY LAYER - Production-grade security gateway
+  # =============================================================================
+  security-gateway:
+    image: envoyproxy/envoy:v1.29-latest
+    container_name: sas-security-gateway
+    restart: unless-stopped
+    networks:
+      - sas-public-network
+      - sas-proxy-network
+    ports:
+      - "443:443"    # HTTPS only
+      - "127.0.0.1:8001:8001"  # Admin interface
+    environment:
+      - ENVOY_LOG_LEVEL=info
+      - ENFORCE_HTTPS=true
+      - RATE_LIMITING_ENABLED=true
+      - WAF_ENABLED=true
+    volumes:
+      - ./security-architecture/envoy-config:/etc/envoy
+      - sas-gateway-certs:/etc/ssl/certs
+      - sas-gateway-logs:/var/log/envoy
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/clusters"]
+      <<: *default-healthcheck
+
+  session-manager:
+    build:
+      context: ./security-architecture/session-manager
+      dockerfile: Dockerfile
+    image: sas-session-manager:latest
+    container_name: sas-session-manager
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-agent-network
+    environment:
+      - SESSION_TIMEOUT=3600
+      - AUTO_DESTROY=true
+      - ENCRYPTION_ENABLED=true
+      - BACKUP_ENABLED=true
+      - TEAM_MODE=true
+      - RBAC_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - sas-session-data:/var/lib/sessions
+      - ./security-architecture/session-config:/etc/session-manager
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - SYS_ADMIN
+    depends_on:
+      - vault
+      - audit-logger
+
+  # =============================================================================
+  # CLOUD INTEGRATION SERVICES - Multi-cloud orchestration
+  # =============================================================================
+  fabric-connector:
+    build:
+      context: ./src/cloud_integration/fabric
+      dockerfile: Dockerfile
+    image: sas-fabric-connector:latest
+    container_name: sas-fabric-connector
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-proxy-network
+    ports:
+      - "127.0.0.1:8091:8091"
+    environment:
+      - FABRIC_MODE=production
+      - FABRIC_WORKSPACE_ID=${FABRIC_WORKSPACE_ID}
+      - SAFETY_MODE=read_only
+      - AUDIT_ALL_REQUESTS=true
+    volumes:
+      - sas-fabric-config:/etc/fabric
+      - sas-fabric-cache:/var/cache/fabric
+      - sas-fabric-logs:/var/log/fabric
+    env_file:
+      - .env.fabric
+    logging: *default-logging
+    <<: *default-security
+    depends_on:
+      - vault
+
+  aws-manager:
+    build:
+      context: ./src/cloud_integration/aws
+      dockerfile: Dockerfile
+    image: sas-aws-manager:latest
+    container_name: sas-aws-manager
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-proxy-network
+    ports:
+      - "127.0.0.1:8092:8092"
+    environment:
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - SAFETY_MODE=read_only
+      - COST_MONITORING=true
+      - RESOURCE_QUOTAS_ENABLED=true
+    volumes:
+      - sas-aws-config:/etc/aws-manager
+      - sas-aws-cache:/var/cache/aws
+      - sas-aws-logs:/var/log/aws
+    env_file:
+      - .env.aws
+    logging: *default-logging
+    <<: *default-security
+    depends_on:
+      - vault
+
+  multi-cloud-orchestrator:
+    build:
+      context: ./src/cloud_integration/orchestrator
+      dockerfile: Dockerfile
+    image: sas-cloud-orchestrator:latest
+    container_name: sas-cloud-orchestrator
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+    ports:
+      - "127.0.0.1:8093:8093"
+    environment:
+      - ORCHESTRATION_MODE=production
+      - COST_OPTIMIZATION=true
+      - CROSS_CLOUD_SYNC=true
+      - FAILOVER_ENABLED=true
+    volumes:
+      - sas-cloud-config:/etc/cloud-orchestrator
+      - sas-cloud-logs:/var/log/cloud-orchestrator
+    logging: *default-logging
+    <<: *default-security
+    depends_on:
+      - fabric-connector
+      - aws-manager
+
+  # =============================================================================
+  # SECURITY & COMPLIANCE SERVICES
+  # =============================================================================
+  vault:
+    image: hashicorp/vault:1.16
+    container_name: sas-vault
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+    ports:
+      - "127.0.0.1:8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_ROOT_TOKEN}
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+      - VAULT_API_ADDR=http://0.0.0.0:8200
+    volumes:
+      - sas-vault-data:/vault/file
+      - sas-vault-logs:/vault/logs
+      - ./security-architecture/vault-config:/vault/config
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - IPC_LOCK
+    command: server
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      <<: *default-healthcheck
+
+  audit-logger:
+    build:
+      context: ./security-architecture/audit-logger
+      dockerfile: Dockerfile
+    image: sas-audit-logger:latest
+    container_name: sas-audit-logger
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-agent-network
+    environment:
+      - LOG_RETENTION_DAYS=90
+      - ENCRYPTION_ENABLED=true
+      - TAMPER_PROTECTION=true
+      - ALERT_THRESHOLD=critical
+      - COMPLIANCE_MODE=soc2
+    volumes:
+      - sas-audit-logs:/var/log/audit
+      - ./security-architecture/audit-config:/etc/audit
+      - /etc/localtime:/etc/localtime:ro
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - DAC_READ_SEARCH
+
+  network-monitor:
+    build:
+      context: ./security-architecture/network-monitor
+      dockerfile: Dockerfile
+    image: sas-network-monitor:latest
+    container_name: sas-network-monitor
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - MONITOR_INTERFACES=all
+      - ALERT_ON_WRITE_ATTEMPT=true
+      - BLOCK_SUSPICIOUS_TRAFFIC=true
+      - ML_ANOMALY_DETECTION=true
+    volumes:
+      - sas-monitor-logs:/var/log/monitor
+      - ./security-architecture/monitor-rules:/etc/monitor/rules
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+  # =============================================================================
+  # SUPPORTING INFRASTRUCTURE SERVICES
+  # =============================================================================
+  redis-cache:
+    image: redis:7-alpine
+    container_name: sas-redis
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-agent-network
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    volumes:
+      - sas-redis-data:/data
+      - ./configs/redis.conf:/etc/redis/redis.conf
+    command: redis-server /etc/redis/redis.conf --requirepass ${REDIS_PASSWORD}
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      <<: *default-healthcheck
+
+  # =============================================================================
+  # MONITORING & OBSERVABILITY STACK
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sas-prometheus
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - sas-prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/"]
+      <<: *default-healthcheck
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sas-grafana
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+      - sas-public-network
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - sas-grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/dashboard-files:/var/lib/grafana/dashboards
+    logging: *default-logging
+    <<: *default-security
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      <<: *default-healthcheck
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: sas-jaeger
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+    ports:
+      - "127.0.0.1:16686:16686"  # Web UI
+      - "127.0.0.1:14268:14268"  # HTTP collector
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/data/jaeger
+    volumes:
+      - sas-jaeger-data:/data/jaeger
+    logging: *default-logging
+    <<: *default-security
+
+  # =============================================================================
+  # LOG MANAGEMENT
+  # =============================================================================
+  fluentd:
+    build:
+      context: ./docker/fluentd
+      dockerfile: Dockerfile
+    image: sas-fluentd:latest
+    container_name: sas-fluentd
+    restart: unless-stopped
+    networks:
+      - sas-management-network
+    ports:
+      - "127.0.0.1:24224:24224"
+    volumes:
+      - ./monitoring/fluentd/conf:/fluentd/etc
+      - sas-logs-aggregate:/var/log/fluentd
+    environment:
+      - FLUENTD_CONF=fluent.conf
+    logging: *default-logging
+    <<: *default-security
+
+  # =============================================================================
+  # REVERSE PROXY & LOAD BALANCER
+  # =============================================================================
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: sas-nginx
+    restart: unless-stopped
+    networks:
+      - sas-public-network
+      - sas-proxy-network
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/sites-enabled:/etc/nginx/sites-enabled:ro
+      - sas-nginx-logs:/var/log/nginx
+    environment:
+      - NGINX_ENTRYPOINT_QUIET_LOGS=1
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - NET_BIND_SERVICE
+    depends_on:
+      - claude-sandbox
+      - grafana
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      <<: *default-healthcheck
+
+# =============================================================================
+# NETWORKS - Segmented network architecture for security
+# =============================================================================
+networks:
+  sas-public-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-sas-public
+
+  sas-proxy-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-sas-proxy
+
+  sas-agent-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.3.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-sas-agent
+      com.docker.network.bridge.enable_icc: "false"
+
+  sas-management-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.4.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-sas-mgmt
+
+# =============================================================================
+# VOLUMES - Persistent and ephemeral storage with security
+# =============================================================================
+volumes:
+  # Core application volumes
+  sas-claude-home:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.solution-automater-sandbox/claude-home
+
+  sas-shared-scripts:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.solution-automater-sandbox/shared-scripts
+
+  # Ephemeral session and workspace volumes
+  sas-session-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      o: size=10G,mode=1700
+
+  sas-agent-workspace:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      o: size=5G,mode=1700
+
+  sas-shared-artifacts:
+    driver: local
+
+  sas-sandbox-storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/sandboxes
+
+  # Security and configuration volumes
+  sas-vault-data:
+    driver: local
+  sas-vault-logs:
+    driver: local
+  sas-gateway-certs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./security/certs
+
+  # Database and cache volumes
+  sas-redis-data:
+    driver: local
+
+  # Cloud integration volumes
+  sas-fabric-config:
+    driver: local
+  sas-fabric-cache:
+    driver: local
+  sas-fabric-logs:
+    driver: local
+  sas-aws-config:
+    driver: local
+  sas-aws-cache:
+    driver: local
+  sas-aws-logs:
+    driver: local
+  sas-cloud-config:
+    driver: local
+  sas-cloud-logs:
+    driver: local
+
+  # Orchestration volumes
+  sas-orchestration-config:
+    driver: local
+  sas-orchestration-logs:
+    driver: local
+  sas-agent-templates:
+    driver: local
+
+  # Monitoring and logging volumes
+  sas-prometheus-data:
+    driver: local
+  sas-grafana-data:
+    driver: local
+  sas-jaeger-data:
+    driver: local
+  sas-logs-aggregate:
+    driver: local
+
+  # Application logs
+  sas-proxy-logs:
+    driver: local
+  sas-gateway-logs:
+    driver: local
+  sas-audit-logs:
+    driver: local
+  sas-monitor-logs:
+    driver: local
+  sas-nginx-logs:
+    driver: local

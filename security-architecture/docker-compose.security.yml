@@ -1,0 +1,331 @@
+version: '3.9'
+
+# Production-grade security architecture for AI Sandbox
+# CRITICAL: This configuration enforces read-only access to all external databases
+
+services:
+  # =============================================================================
+  # DATABASE CONNECTION PROXY - Enforces read-only operations
+  # =============================================================================
+  db-proxy:
+    build: ./db-proxy
+    container_name: sandbox-db-proxy
+    restart: unless-stopped
+    networks:
+      - proxy-network
+      - agent-network
+    ports:
+      - "127.0.0.1:3306:3306"   # MySQL proxy
+      - "127.0.0.1:1433:1433"   # MSSQL proxy
+      - "127.0.0.1:27017:27017" # MongoDB proxy
+    environment:
+      - PROXY_MODE=READ_ONLY
+      - AUDIT_ENABLED=true
+      - BLOCK_WRITES=true
+      - LOG_LEVEL=info
+    volumes:
+      - ./proxy-config:/etc/proxy
+      - proxy-logs:/var/log/proxy
+      - /etc/localtime:/etc/localtime:ro
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "3306"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # =============================================================================
+  # SESSION LIFECYCLE MANAGER - Handles creation/destruction
+  # =============================================================================
+  session-manager:
+    build: ./session-manager
+    container_name: sandbox-session-manager
+    restart: unless-stopped
+    networks:
+      - management-network
+      - agent-network
+    environment:
+      - SESSION_TIMEOUT=3600  # 1 hour default
+      - AUTO_DESTROY=true
+      - ENCRYPTION_ENABLED=true
+      - S3_BACKUP_ENABLED=true
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - session-data:/var/lib/sessions
+      - ./session-config:/etc/session-manager
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined  # Required for container management
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_ADMIN  # Required for container lifecycle
+    depends_on:
+      - vault
+      - audit-logger
+
+  # =============================================================================
+  # SECURITY GATEWAY - Main entry point with authentication
+  # =============================================================================
+  security-gateway:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: sandbox-gateway
+    restart: unless-stopped
+    networks:
+      - public-network
+      - proxy-network
+    ports:
+      - "443:443"  # HTTPS only
+      - "8001:8001"  # Admin interface (internal only)
+    volumes:
+      - ./envoy-config:/etc/envoy
+      - gateway-certs:/etc/ssl/certs
+      - gateway-logs:/var/log/envoy
+    environment:
+      - ENVOY_LOG_LEVEL=info
+      - ENFORCE_HTTPS=true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/clusters"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # =============================================================================
+  # VAULT - Secret management and encryption
+  # =============================================================================
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: sandbox-vault
+    restart: unless-stopped
+    networks:
+      - management-network
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=sandbox-root-token  # Change in production
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    volumes:
+      - vault-data:/vault/file
+      - vault-logs:/vault/logs
+      - ./vault-config:/vault/config
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - IPC_LOCK
+    command: server
+
+  # =============================================================================
+  # AUDIT LOGGER - Tamper-proof logging system
+  # =============================================================================
+  audit-logger:
+    build: ./audit-logger
+    container_name: sandbox-audit-logger
+    restart: unless-stopped
+    networks:
+      - management-network
+      - agent-network
+    environment:
+      - LOG_RETENTION_DAYS=90
+      - ENCRYPTION_ENABLED=true
+      - TAMPER_PROTECTION=true
+      - ALERT_THRESHOLD=critical
+    volumes:
+      - audit-logs:/var/log/audit
+      - ./audit-config:/etc/audit
+      - /etc/localtime:/etc/localtime:ro
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH  # For log file access
+
+  # =============================================================================
+  # NETWORK MONITOR - Real-time traffic analysis
+  # =============================================================================
+  network-monitor:
+    build: ./network-monitor
+    container_name: sandbox-network-monitor
+    restart: unless-stopped
+    network_mode: host  # Required for packet capture
+    environment:
+      - MONITOR_INTERFACES=all
+      - ALERT_ON_WRITE_ATTEMPT=true
+      - BLOCK_SUSPICIOUS_TRAFFIC=true
+    volumes:
+      - monitor-logs:/var/log/monitor
+      - ./monitor-rules:/etc/monitor/rules
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+  # =============================================================================
+  # AGENT RUNTIME - Template for AI agent containers
+  # =============================================================================
+  agent-template:
+    image: sandbox-agent:latest
+    build: ./agent-base
+    restart: "no"  # Agents are ephemeral
+    networks:
+      - agent-network
+    environment:
+      - AGENT_ID=${AGENT_ID}
+      - SESSION_ID=${SESSION_ID}
+      - MAX_MEMORY=4G
+      - MAX_CPU=2
+      - TIMEOUT=3600
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 1G
+      - agent-workspace:/workspace:rw
+      - shared-artifacts:/artifacts:ro
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+      - seccomp:./seccomp-profile.json
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+# =============================================================================
+# NETWORKS - Isolated network segments
+# =============================================================================
+networks:
+  public-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-public
+
+  proxy-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-proxy
+
+  agent-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.22.0.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-agent
+      com.docker.network.bridge.enable_icc: "false"  # Disable inter-container communication
+
+  management-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.23.0.0/24
+    driver_opts:
+      com.docker.network.bridge.name: br-mgmt
+
+# =============================================================================
+# VOLUMES - Persistent storage with encryption
+# =============================================================================
+volumes:
+  proxy-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/proxy-logs
+
+  session-data:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      o: size=10G,mode=1700
+
+  vault-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/vault-data
+
+  vault-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/vault-logs
+
+  audit-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/audit-logs
+
+  monitor-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/monitor-logs
+
+  gateway-certs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/gateway-certs
+
+  gateway-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/gateway-logs
+
+  agent-workspace:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      o: size=5G,mode=1700
+
+  shared-artifacts:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/shared-artifacts

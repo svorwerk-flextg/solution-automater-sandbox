@@ -1,0 +1,251 @@
+# Database Safety Layer - Docker Compose Configuration
+# Provides bulletproof database operations with multi-database support
+
+version: '3.8'
+
+services:
+  # Main Database Safety Proxy Service
+  db-safety-proxy:
+    build:
+      context: .
+      dockerfile: docker/database-safety/Dockerfile
+    image: database-safety:latest
+    container_name: db_safety_proxy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./configs/database_safety_config.yaml:/app/config/database_config.yaml:ro
+      - ./logs:/var/log/database_safety
+      - sandbox_storage:/tmp/database_sandboxes
+      - ./backups:/backups/database_safety
+    environment:
+      - DB_SAFETY_CONFIG=/app/config/database_config.yaml
+      - DB_SAFETY_LOG_LEVEL=INFO
+      - DB_SAFETY_PORT=8080
+      - DB_SAFETY_HOST=0.0.0.0
+      - PYTHONPATH=/app
+    env_file:
+      - .env.database_safety
+    networks:
+      - database_safety_network
+    depends_on:
+      - redis-cache
+      - postgres-sandbox
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Redis for Caching and Session Management
+  redis-cache:
+    image: redis:7-alpine
+    container_name: db_safety_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL for Advanced Sandbox Support
+  postgres-sandbox:
+    image: postgres:15-alpine
+    container_name: db_safety_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: sandbox_template
+      POSTGRES_USER: sandbox_admin
+      POSTGRES_PASSWORD: secure_sandbox_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/postgres_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sandbox_admin -d sandbox_template"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MySQL for Sandbox Support
+  mysql-sandbox:
+    image: mysql:8.0
+    container_name: db_safety_mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_sandbox_password
+      MYSQL_DATABASE: sandbox_template
+      MYSQL_USER: sandbox_admin
+      MYSQL_PASSWORD: secure_sandbox_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/mysql_init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "sandbox_admin", "-psecure_sandbox_password"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MongoDB for NoSQL Sandbox Support
+  mongodb-sandbox:
+    image: mongo:6.0
+    container_name: db_safety_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: sandbox_admin
+      MONGO_INITDB_ROOT_PASSWORD: secure_sandbox_password
+      MONGO_INITDB_DATABASE: sandbox_template
+    volumes:
+      - mongodb_data:/data/db
+      - ./js/mongodb_init.js:/docker-entrypoint-initdb.d/01_init.js
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring with Prometheus (Optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: db_safety_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Grafana for Visualization (Optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: db_safety_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin_password
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    depends_on:
+      - prometheus
+
+  # Log Aggregation with Fluentd (Optional)
+  fluentd:
+    build:
+      context: ./docker/fluentd
+      dockerfile: Dockerfile
+    container_name: db_safety_fluentd
+    volumes:
+      - ./logs:/var/log/database_safety
+      - ./monitoring/fluentd/conf:/fluentd/etc
+    ports:
+      - "24224:24224"
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Nginx Reverse Proxy (Optional)
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: db_safety_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - database_safety_network
+    restart: unless-stopped
+    profiles:
+      - production
+    depends_on:
+      - db-safety-proxy
+
+# Networks
+networks:
+  database_safety_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+
+# Volumes
+volumes:
+  # Application data
+  sandbox_storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/sandboxes
+
+  # Database storage
+  postgres_data:
+    driver: local
+  mysql_data:
+    driver: local
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+
+  # Monitoring data
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+  # Logs
+  nginx_logs:
+    driver: local
+
+# Health check for the entire stack
+x-healthcheck-config: &healthcheck
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 40s

@@ -1,0 +1,1324 @@
+#!/bin/bash
+
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX (SAS) - Master CLI Tool
+# Enterprise AI Agent Orchestration Platform Command Line Interface
+# =============================================================================
+
+set -euo pipefail
+
+# =============================================================================
+# GLOBAL CONFIGURATION AND CONSTANTS
+# =============================================================================
+SAS_VERSION="1.0.0"
+SAS_HOME="${HOME}/.solution-automater-sandbox"
+SAS_PROJECT_DIR="${SAS_PROJECT_DIR:-$(pwd)}"
+SAS_CONFIG_FILE="${SAS_HOME}/config.yaml"
+SAS_COMPOSE_FILE="${SAS_PROJECT_DIR}/docker-compose.solution-automater-sandbox.yml"
+SAS_ENV_FILE="${SAS_PROJECT_DIR}/.env.solution-automater-sandbox"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Emoji for better UX
+SUCCESS="✅"
+ERROR="❌"
+WARNING="⚠️"
+INFO="ℹ️"
+ROCKET="🚀"
+GEAR="⚙️"
+SHIELD="🛡️"
+CLOUD="☁️"
+AGENT="🤖"
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+log_info() {
+    echo -e "${BLUE}${INFO} $1${NC}"
+}
+
+log_success() {
+    echo -e "${GREEN}${SUCCESS} $1${NC}"
+}
+
+log_error() {
+    echo -e "${RED}${ERROR} $1${NC}"
+}
+
+log_warning() {
+    echo -e "${YELLOW}${WARNING} $1${NC}"
+}
+
+log_section() {
+    echo -e "\n${PURPLE}${GEAR} $1${NC}\n"
+}
+
+check_prerequisites() {
+    local missing_deps=()
+    
+    # Check Docker
+    if ! command -v docker >/dev/null 2>&1; then
+        missing_deps+=("docker")
+    fi
+    
+    # Check Docker Compose
+    if ! docker compose version >/dev/null 2>&1; then
+        missing_deps+=("docker-compose")
+    fi
+    
+    # Check Git
+    if ! command -v git >/dev/null 2>&1; then
+        missing_deps+=("git")
+    fi
+    
+    # Check curl
+    if ! command -v curl >/dev/null 2>&1; then
+        missing_deps+=("curl")
+    fi
+    
+    # Check jq
+    if ! command -v jq >/dev/null 2>&1; then
+        missing_deps+=("jq")
+    fi
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        log_error "Missing required dependencies: ${missing_deps[*]}"
+        echo -e "\n${CYAN}Please install the missing dependencies:${NC}"
+        for dep in "${missing_deps[@]}"; do
+            case $dep in
+                "docker")
+                    echo "  - Docker: https://docs.docker.com/get-docker/"
+                    ;;
+                "docker-compose")
+                    echo "  - Docker Compose: https://docs.docker.com/compose/install/"
+                    ;;
+                "git")
+                    echo "  - Git: https://git-scm.com/downloads"
+                    ;;
+                "curl")
+                    echo "  - curl: sudo apt-get install curl (Ubuntu/Debian) or brew install curl (macOS)"
+                    ;;
+                "jq")
+                    echo "  - jq: sudo apt-get install jq (Ubuntu/Debian) or brew install jq (macOS)"
+                    ;;
+            esac
+        done
+        exit 1
+    fi
+}
+
+ensure_sas_home() {
+    if [ ! -d "$SAS_HOME" ]; then
+        log_info "Creating SAS home directory: $SAS_HOME"
+        mkdir -p "$SAS_HOME"/{config,data,logs,cache,scripts}
+    fi
+}
+
+check_docker_running() {
+    if ! docker info >/dev/null 2>&1; then
+        log_error "Docker daemon is not running. Please start Docker and try again."
+        exit 1
+    fi
+}
+
+generate_secure_password() {
+    openssl rand -base64 32 | tr -d "=+/" | cut -c1-25
+}
+
+# =============================================================================
+# SETUP COMMANDS
+# =============================================================================
+cmd_setup() {
+    log_section "Solution-Automater-Sandbox Setup ${ROCKET}"
+    
+    check_prerequisites
+    check_docker_running
+    ensure_sas_home
+    
+    log_info "Setting up Solution-Automater-Sandbox environment..."
+    
+    # Generate secure passwords and tokens
+    local vault_token=$(generate_secure_password)
+    local redis_password=$(generate_secure_password)
+    local grafana_password=$(generate_secure_password)
+    
+    # Create environment file
+    log_info "Creating environment configuration..."
+    cat > "$SAS_ENV_FILE" << EOF
+# =============================================================================
+# SOLUTION-AUTOMATER-SANDBOX ENVIRONMENT CONFIGURATION
+# Generated on: $(date)
+# =============================================================================
+
+# Core Configuration
+SAS_VERSION=$SAS_VERSION
+SAS_HOME=$SAS_HOME
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+GIT_USER_NAME=$(git config --global user.name || echo "SAS User")
+GIT_USER_EMAIL=$(git config --global user.email || echo "sas@example.com")
+
+# Security Configuration
+VAULT_ROOT_TOKEN=$vault_token
+REDIS_PASSWORD=$redis_password
+GRAFANA_ADMIN_PASSWORD=$grafana_password
+
+# Database Safety Configuration
+DB_SAFETY_ENABLED=true
+DB_SAFETY_LOG_LEVEL=INFO
+DB_SAFETY_AUDIT_ENABLED=true
+
+# Cloud Integration (Optional - add your credentials)
+# FABRIC_WORKSPACE_ID=your_fabric_workspace_id
+# AWS_ACCESS_KEY_ID=your_aws_access_key
+# AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+# AWS_DEFAULT_REGION=us-east-1
+
+# API Keys (Optional - add your API keys)
+# ANTHROPIC_API_KEY=your_anthropic_key
+# OPENAI_API_KEY=your_openai_key
+# TWILIO_ACCOUNT_SID=your_twilio_sid
+# TWILIO_AUTH_TOKEN=your_twilio_token
+# TWILIO_FROM_NUMBER=+1234567890
+# TWILIO_TO_NUMBER=+0987654321
+
+# System Configuration
+SYSTEM_PACKAGES=""
+CONDA_PREFIX=""
+CONDA_EXTRA_DIRS=""
+
+# Performance Configuration
+DOCKER_MEMORY_LIMIT=8g
+DOCKER_GPU_ACCESS=""
+EOF
+
+    # Copy existing .env if it exists
+    if [ -f "${SAS_PROJECT_DIR}/.env" ]; then
+        log_info "Merging existing .env configuration..."
+        cat "${SAS_PROJECT_DIR}/.env" >> "$SAS_ENV_FILE"
+    fi
+    
+    # Create necessary directories
+    log_info "Creating directory structure..."
+    mkdir -p "$SAS_HOME"/{claude-home,shared-scripts,configs,logs,data,cache,security/certs}
+    mkdir -p "${SAS_PROJECT_DIR}"/{data/sandboxes,logs,volumes,security/certs,monitoring,nginx}
+    
+    # Copy Claude authentication if exists
+    if [ -f "$HOME/.claude.json" ]; then
+        log_info "Copying Claude authentication..."
+        cp "$HOME/.claude.json" "${SAS_PROJECT_DIR}/.claude.json"
+    else
+        log_warning "Claude authentication not found. Please run 'claude' and authenticate first."
+    fi
+    
+    # Initialize configuration files
+    setup_monitoring_config
+    setup_nginx_config
+    setup_security_config
+    
+    log_success "Setup completed successfully!"
+    echo -e "\n${CYAN}Next steps:${NC}"
+    echo "1. Review and update $SAS_ENV_FILE with your API keys"
+    echo "2. Run 'sas start' to launch the platform"
+    echo "3. Access the dashboard at https://localhost"
+    echo -e "\n${CYAN}For help: sas help${NC}"
+}
+
+setup_monitoring_config() {
+    log_info "Setting up monitoring configuration..."
+    
+    # Prometheus configuration
+    mkdir -p "${SAS_PROJECT_DIR}/monitoring"
+    cat > "${SAS_PROJECT_DIR}/monitoring/prometheus.yml" << 'EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "rules/*.yml"
+
+scrape_configs:
+  - job_name: 'sas-services'
+    static_configs:
+      - targets:
+        - 'sas-claude-main:8080'
+        - 'sas-orchestrator:8090'
+        - 'sas-fabric-connector:8091'
+        - 'sas-aws-manager:8092'
+        - 'sas-cloud-orchestrator:8093'
+        - 'sas-prometheus:9090'
+        - 'sas-grafana:3000'
+    scrape_interval: 10s
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['sas-redis:6379']
+
+  - job_name: 'vault'
+    static_configs:
+      - targets: ['sas-vault:8200']
+EOF
+
+    # Grafana datasources
+    mkdir -p "${SAS_PROJECT_DIR}/monitoring/grafana/datasources"
+    cat > "${SAS_PROJECT_DIR}/monitoring/grafana/datasources/prometheus.yml" << 'EOF'
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://sas-prometheus:9090
+    isDefault: true
+    editable: false
+EOF
+}
+
+setup_nginx_config() {
+    log_info "Setting up Nginx configuration..."
+    
+    mkdir -p "${SAS_PROJECT_DIR}/nginx/sites-enabled"
+    cat > "${SAS_PROJECT_DIR}/nginx/nginx.conf" << 'EOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream claude-backend {
+        server sas-claude-main:8080;
+    }
+    
+    upstream grafana-backend {
+        server sas-grafana:3000;
+    }
+    
+    upstream orchestrator-backend {
+        server sas-orchestrator:8090;
+    }
+
+    server {
+        listen 80;
+        server_name localhost;
+        return 301 https://$server_name$request_uri;
+    }
+
+    server {
+        listen 443 ssl http2;
+        server_name localhost;
+        
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        
+        location / {
+            proxy_pass http://claude-backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        
+        location /grafana/ {
+            proxy_pass http://grafana-backend/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        
+        location /orchestrator/ {
+            proxy_pass http://orchestrator-backend/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+EOF
+}
+
+setup_security_config() {
+    log_info "Setting up security configuration..."
+    
+    # Generate self-signed certificates
+    if [ ! -f "${SAS_PROJECT_DIR}/security/certs/cert.pem" ]; then
+        mkdir -p "${SAS_PROJECT_DIR}/security/certs"
+        openssl req -x509 -newkey rsa:4096 -keyout "${SAS_PROJECT_DIR}/security/certs/key.pem" \
+            -out "${SAS_PROJECT_DIR}/security/certs/cert.pem" -days 365 -nodes \
+            -subj "/C=US/ST=CA/L=SF/O=SAS/CN=localhost" 2>/dev/null || true
+    fi
+}
+
+# =============================================================================
+# SERVICE MANAGEMENT COMMANDS
+# =============================================================================
+cmd_start() {
+    local service="${1:-}"
+    local background="${2:-false}"
+    
+    check_docker_running
+    
+    if [ ! -f "$SAS_COMPOSE_FILE" ]; then
+        log_error "Docker Compose file not found. Run 'sas setup' first."
+        exit 1
+    fi
+    
+    if [ ! -f "$SAS_ENV_FILE" ]; then
+        log_error "Environment file not found. Run 'sas setup' first."
+        exit 1
+    fi
+    
+    log_section "Starting Solution-Automater-Sandbox ${ROCKET}"
+    
+    if [ -z "$service" ]; then
+        log_info "Starting all services..."
+        if [ "$background" = "true" ]; then
+            docker compose -f "$SAS_COMPOSE_FILE" --env-file "$SAS_ENV_FILE" up -d
+        else
+            docker compose -f "$SAS_COMPOSE_FILE" --env-file "$SAS_ENV_FILE" up
+        fi
+    else
+        log_info "Starting service: $service"
+        docker compose -f "$SAS_COMPOSE_FILE" --env-file "$SAS_ENV_FILE" up -d "$service"
+    fi
+    
+    if [ "$background" = "true" ] || [ -n "$service" ]; then
+        log_success "Services started successfully!"
+        echo -e "\n${CYAN}Access points:${NC}"
+        echo "• Claude Code: https://localhost"
+        echo "• Monitoring: https://localhost/grafana"
+        echo "• Orchestrator: https://localhost/orchestrator"
+        echo -e "\n${CYAN}Check status: sas status${NC}"
+    fi
+}
+
+cmd_stop() {
+    local service="${1:-}"
+    
+    check_docker_running
+    
+    if [ ! -f "$SAS_COMPOSE_FILE" ]; then
+        log_warning "Docker Compose file not found."
+        return 0
+    fi
+    
+    log_section "Stopping Solution-Automater-Sandbox"
+    
+    if [ -z "$service" ]; then
+        log_info "Stopping all services..."
+        docker compose -f "$SAS_COMPOSE_FILE" down
+    else
+        log_info "Stopping service: $service"
+        docker compose -f "$SAS_COMPOSE_FILE" stop "$service"
+    fi
+    
+    log_success "Services stopped successfully!"
+}
+
+cmd_restart() {
+    local service="${1:-}"
+    
+    log_section "Restarting Solution-Automater-Sandbox"
+    
+    cmd_stop "$service"
+    sleep 2
+    cmd_start "$service" "true"
+}
+
+cmd_status() {
+    check_docker_running
+    
+    if [ ! -f "$SAS_COMPOSE_FILE" ]; then
+        log_warning "Docker Compose file not found. Run 'sas setup' first."
+        return 0
+    fi
+    
+    log_section "Solution-Automater-Sandbox Status"
+    
+    echo -e "${CYAN}Service Status:${NC}"
+    docker compose -f "$SAS_COMPOSE_FILE" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+    
+    echo -e "\n${CYAN}Resource Usage:${NC}"
+    docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" $(docker compose -f "$SAS_COMPOSE_FILE" ps -q) 2>/dev/null || echo "No containers running"
+    
+    # Health checks
+    echo -e "\n${CYAN}Health Checks:${NC}"
+    local services=("sas-claude-main" "sas-redis" "sas-prometheus" "sas-grafana")
+    
+    for service in "${services[@]}"; do
+        if docker ps --format "{{.Names}}" | grep -q "^$service$"; then
+            local health=$(docker inspect --format="{{if .State.Health}}{{.State.Health.Status}}{{else}}no healthcheck{{end}}" "$service" 2>/dev/null)
+            case $health in
+                "healthy")
+                    echo -e "  ${GREEN}${SUCCESS}${NC} $service: healthy"
+                    ;;
+                "unhealthy")
+                    echo -e "  ${RED}${ERROR}${NC} $service: unhealthy"
+                    ;;
+                "starting")
+                    echo -e "  ${YELLOW}${WARNING}${NC} $service: starting"
+                    ;;
+                *)
+                    echo -e "  ${BLUE}${INFO}${NC} $service: $health"
+                    ;;
+            esac
+        else
+            echo -e "  ${RED}${ERROR}${NC} $service: not running"
+        fi
+    done
+}
+
+# =============================================================================
+# AGENT MANAGEMENT COMMANDS
+# =============================================================================
+cmd_agent() {
+    local action="${1:-list}"
+    shift || true
+    
+    case "$action" in
+        "start")
+            agent_start "$@"
+            ;;
+        "stop")
+            agent_stop "$@"
+            ;;
+        "list")
+            agent_list
+            ;;
+        "logs")
+            agent_logs "$@"
+            ;;
+        "deploy")
+            agent_deploy "$@"
+            ;;
+        *)
+            log_error "Unknown agent action: $action"
+            echo "Available actions: start, stop, list, logs, deploy"
+            exit 1
+            ;;
+    esac
+}
+
+agent_start() {
+    local agent_type="${1:-general}"
+    local agent_name="${2:-sas-agent-$(date +%s)}"
+    
+    log_info "Starting agent: $agent_name (type: $agent_type)"
+    
+    # Start agent using orchestrator
+    docker run -d \
+        --name "$agent_name" \
+        --network sas-agent-network \
+        -e AGENT_TYPE="$agent_type" \
+        -e AGENT_ID="$agent_name" \
+        -e SESSION_ID="$(uuidgen)" \
+        solution-automater-sandbox:latest
+    
+    log_success "Agent started: $agent_name"
+}
+
+agent_stop() {
+    local agent_name="${1:-}"
+    
+    if [ -z "$agent_name" ]; then
+        log_error "Agent name required"
+        exit 1
+    fi
+    
+    log_info "Stopping agent: $agent_name"
+    docker stop "$agent_name" 2>/dev/null || log_warning "Agent not running"
+    docker rm "$agent_name" 2>/dev/null || true
+    log_success "Agent stopped: $agent_name"
+}
+
+agent_list() {
+    log_section "Active Agents ${AGENT}"
+    
+    local agents=$(docker ps --filter "name=sas-agent-" --format "{{.Names}}" 2>/dev/null)
+    
+    if [ -z "$agents" ]; then
+        echo "No active agents"
+        return 0
+    fi
+    
+    echo -e "${CYAN}Active Agents:${NC}"
+    docker ps --filter "name=sas-agent-" --format "table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}"
+}
+
+agent_logs() {
+    local agent_name="${1:-}"
+    
+    if [ -z "$agent_name" ]; then
+        log_error "Agent name required"
+        exit 1
+    fi
+    
+    log_info "Showing logs for agent: $agent_name"
+    docker logs -f "$agent_name"
+}
+
+agent_deploy() {
+    local workflow_file="${1:-}"
+    
+    if [ -z "$workflow_file" ]; then
+        log_error "Workflow file required"
+        exit 1
+    fi
+    
+    if [ ! -f "$workflow_file" ]; then
+        log_error "Workflow file not found: $workflow_file"
+        exit 1
+    fi
+    
+    log_info "Deploying workflow: $workflow_file"
+    # TODO: Implement workflow deployment logic
+    log_warning "Workflow deployment not yet implemented"
+}
+
+# =============================================================================
+# DATABASE MANAGEMENT COMMANDS
+# =============================================================================
+cmd_db() {
+    local action="${1:-status}"
+    shift || true
+    
+    case "$action" in
+        "connect")
+            db_connect "$@"
+            ;;
+        "query")
+            db_query "$@"
+            ;;
+        "status")
+            db_status
+            ;;
+        "test")
+            db_test
+            ;;
+        *)
+            log_error "Unknown database action: $action"
+            echo "Available actions: connect, query, status, test"
+            exit 1
+            ;;
+    esac
+}
+
+db_connect() {
+    local db_type="${1:-mysql}"
+    
+    log_info "Connecting to database: $db_type"
+    
+    case "$db_type" in
+        "mysql")
+            docker exec -it sas-db-proxy mysql -h localhost -P 3306 -u proxy_user -p
+            ;;
+        "postgres")
+            docker exec -it sas-db-proxy psql -h localhost -p 5432 -U proxy_user
+            ;;
+        "mongodb")
+            docker exec -it sas-db-proxy mongo --host localhost --port 27017
+            ;;
+        *)
+            log_error "Unsupported database type: $db_type"
+            echo "Supported types: mysql, postgres, mongodb"
+            exit 1
+            ;;
+    esac
+}
+
+db_query() {
+    local db_type="${1:-mysql}"
+    local query="${2:-}"
+    
+    if [ -z "$query" ]; then
+        log_error "Query required"
+        exit 1
+    fi
+    
+    log_info "Executing query on $db_type: $query"
+    
+    case "$db_type" in
+        "mysql")
+            docker exec sas-db-proxy mysql -h localhost -P 3306 -u proxy_user -p -e "$query"
+            ;;
+        "postgres")
+            docker exec sas-db-proxy psql -h localhost -p 5432 -U proxy_user -c "$query"
+            ;;
+        *)
+            log_error "Query execution not supported for: $db_type"
+            exit 1
+            ;;
+    esac
+}
+
+db_status() {
+    log_section "Database Status"
+    
+    if docker ps --format "{{.Names}}" | grep -q "sas-db-proxy"; then
+        log_success "Database proxy is running"
+        
+        echo -e "\n${CYAN}Proxy Status:${NC}"
+        curl -s http://localhost:8080/health 2>/dev/null | jq . || echo "Proxy health check failed"
+        
+        echo -e "\n${CYAN}Connection Test:${NC}"
+        db_test
+    else
+        log_error "Database proxy is not running"
+    fi
+}
+
+db_test() {
+    log_info "Testing database connections..."
+    
+    # Test MySQL
+    if nc -z localhost 3306 2>/dev/null; then
+        echo -e "${GREEN}${SUCCESS}${NC} MySQL proxy: accessible"
+    else
+        echo -e "${RED}${ERROR}${NC} MySQL proxy: not accessible"
+    fi
+    
+    # Test PostgreSQL
+    if nc -z localhost 5432 2>/dev/null; then
+        echo -e "${GREEN}${SUCCESS}${NC} PostgreSQL proxy: accessible"
+    else
+        echo -e "${RED}${ERROR}${NC} PostgreSQL proxy: not accessible"
+    fi
+    
+    # Test MongoDB
+    if nc -z localhost 27017 2>/dev/null; then
+        echo -e "${GREEN}${SUCCESS}${NC} MongoDB proxy: accessible"
+    else
+        echo -e "${RED}${ERROR}${NC} MongoDB proxy: not accessible"
+    fi
+}
+
+# =============================================================================
+# CLOUD MANAGEMENT COMMANDS
+# =============================================================================
+cmd_cloud() {
+    local provider="${1:-status}"
+    shift || true
+    
+    case "$provider" in
+        "fabric")
+            cloud_fabric "$@"
+            ;;
+        "aws")
+            cloud_aws "$@"
+            ;;
+        "azure")
+            cloud_azure "$@"
+            ;;
+        "status")
+            cloud_status
+            ;;
+        *)
+            log_error "Unknown cloud provider: $provider"
+            echo "Available providers: fabric, aws, azure, status"
+            exit 1
+            ;;
+    esac
+}
+
+cloud_fabric() {
+    log_info "Microsoft Fabric integration"
+    
+    if docker ps --format "{{.Names}}" | grep -q "sas-fabric-connector"; then
+        echo -e "${CYAN}Fabric Connector Status:${NC}"
+        curl -s http://localhost:8091/health 2>/dev/null | jq . || echo "Fabric connector not responding"
+    else
+        log_error "Fabric connector not running"
+    fi
+}
+
+cloud_aws() {
+    log_info "AWS integration"
+    
+    if docker ps --format "{{.Names}}" | grep -q "sas-aws-manager"; then
+        echo -e "${CYAN}AWS Manager Status:${NC}"
+        curl -s http://localhost:8092/health 2>/dev/null | jq . || echo "AWS manager not responding"
+    else
+        log_error "AWS manager not running"
+    fi
+}
+
+cloud_azure() {
+    log_info "Azure integration"
+    log_warning "Azure integration not yet implemented"
+}
+
+cloud_status() {
+    log_section "Cloud Integration Status ${CLOUD}"
+    
+    local connectors=("fabric" "aws" "azure")
+    
+    for connector in "${connectors[@]}"; do
+        case $connector in
+            "fabric")
+                if docker ps --format "{{.Names}}" | grep -q "sas-fabric-connector"; then
+                    echo -e "  ${GREEN}${SUCCESS}${NC} Microsoft Fabric: connected"
+                else
+                    echo -e "  ${RED}${ERROR}${NC} Microsoft Fabric: disconnected"
+                fi
+                ;;
+            "aws")
+                if docker ps --format "{{.Names}}" | grep -q "sas-aws-manager"; then
+                    echo -e "  ${GREEN}${SUCCESS}${NC} AWS: connected"
+                else
+                    echo -e "  ${RED}${ERROR}${NC} AWS: disconnected"
+                fi
+                ;;
+            "azure")
+                echo -e "  ${YELLOW}${WARNING}${NC} Azure: not implemented"
+                ;;
+        esac
+    done
+}
+
+# =============================================================================
+# SECURITY MANAGEMENT COMMANDS
+# =============================================================================
+cmd_security() {
+    local action="${1:-status}"
+    shift || true
+    
+    case "$action" in
+        "scan")
+            security_scan "$@"
+            ;;
+        "audit")
+            security_audit "$@"
+            ;;
+        "status")
+            security_status
+            ;;
+        "logs")
+            security_logs "$@"
+            ;;
+        *)
+            log_error "Unknown security action: $action"
+            echo "Available actions: scan, audit, status, logs"
+            exit 1
+            ;;
+    esac
+}
+
+security_scan() {
+    log_section "Security Scan ${SHIELD}"
+    
+    log_info "Scanning containers for vulnerabilities..."
+    
+    # Get all SAS containers
+    local containers=$(docker ps --filter "name=sas-" --format "{{.Names}}")
+    
+    for container in $containers; do
+        echo -e "\n${CYAN}Scanning $container:${NC}"
+        docker exec "$container" /bin/bash -c "
+            # Check for common security issues
+            echo 'Checking file permissions...'
+            find /app -type f -perm /o+w 2>/dev/null | head -5
+            
+            echo 'Checking running processes...'
+            ps aux | head -10
+            
+            echo 'Checking network connections...'
+            netstat -tlnp 2>/dev/null | head -10
+        " 2>/dev/null || log_warning "Could not scan $container"
+    done
+}
+
+security_audit() {
+    log_section "Security Audit ${SHIELD}"
+    
+    if docker ps --format "{{.Names}}" | grep -q "sas-audit-logger"; then
+        log_info "Retrieving audit logs..."
+        docker exec sas-audit-logger cat /var/log/audit/audit.log | tail -50
+    else
+        log_error "Audit logger not running"
+    fi
+}
+
+security_status() {
+    log_section "Security Status ${SHIELD}"
+    
+    local security_services=("sas-security-gateway" "sas-vault" "sas-audit-logger" "sas-network-monitor")
+    
+    for service in "${security_services[@]}"; do
+        if docker ps --format "{{.Names}}" | grep -q "^$service$"; then
+            echo -e "  ${GREEN}${SUCCESS}${NC} $service: running"
+        else
+            echo -e "  ${RED}${ERROR}${NC} $service: not running"
+        fi
+    done
+    
+    echo -e "\n${CYAN}Certificate Status:${NC}"
+    if [ -f "${SAS_PROJECT_DIR}/security/certs/cert.pem" ]; then
+        local cert_expiry=$(openssl x509 -in "${SAS_PROJECT_DIR}/security/certs/cert.pem" -noout -enddate | cut -d= -f2)
+        echo -e "  ${GREEN}${SUCCESS}${NC} SSL Certificate expires: $cert_expiry"
+    else
+        echo -e "  ${RED}${ERROR}${NC} SSL Certificate not found"
+    fi
+}
+
+security_logs() {
+    local service="${1:-all}"
+    
+    log_info "Showing security logs for: $service"
+    
+    case "$service" in
+        "all")
+            docker logs --tail=50 sas-audit-logger 2>/dev/null || true
+            ;;
+        "audit")
+            docker logs --tail=100 -f sas-audit-logger
+            ;;
+        "gateway")
+            docker logs --tail=100 -f sas-security-gateway
+            ;;
+        "vault")
+            docker logs --tail=100 -f sas-vault
+            ;;
+        *)
+            log_error "Unknown security service: $service"
+            echo "Available services: all, audit, gateway, vault"
+            ;;
+    esac
+}
+
+# =============================================================================
+# SESSION MANAGEMENT COMMANDS
+# =============================================================================
+cmd_session() {
+    local action="${1:-list}"
+    shift || true
+    
+    case "$action" in
+        "new")
+            session_new "$@"
+            ;;
+        "continue")
+            session_continue "$@"
+            ;;
+        "list")
+            session_list
+            ;;
+        "cleanup")
+            session_cleanup "$@"
+            ;;
+        *)
+            log_error "Unknown session action: $action"
+            echo "Available actions: new, continue, list, cleanup"
+            exit 1
+            ;;
+    esac
+}
+
+session_new() {
+    local session_name="${1:-sas-session-$(date +%s)}"
+    
+    log_info "Creating new session: $session_name"
+    
+    # Create session using orchestrator
+    curl -s -X POST http://localhost:8090/sessions \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"$session_name\",\"type\":\"interactive\"}" | jq . || log_error "Failed to create session"
+    
+    log_success "Session created: $session_name"
+}
+
+session_continue() {
+    local session_name="${1:-}"
+    
+    if [ -z "$session_name" ]; then
+        log_error "Session name required"
+        exit 1
+    fi
+    
+    log_info "Continuing session: $session_name"
+    
+    curl -s -X POST "http://localhost:8090/sessions/$session_name/resume" | jq . || log_error "Failed to resume session"
+}
+
+session_list() {
+    log_section "Active Sessions"
+    
+    curl -s http://localhost:8090/sessions 2>/dev/null | jq . || log_warning "Could not retrieve session list"
+}
+
+session_cleanup() {
+    local age_hours="${1:-24}"
+    
+    log_info "Cleaning up sessions older than $age_hours hours"
+    
+    curl -s -X DELETE "http://localhost:8090/sessions/cleanup?age_hours=$age_hours" | jq . || log_error "Failed to cleanup sessions"
+    
+    log_success "Session cleanup completed"
+}
+
+# =============================================================================
+# MONITORING AND LOGS COMMANDS
+# =============================================================================
+cmd_logs() {
+    local service="${1:-all}"
+    local lines="${2:-100}"
+    
+    log_info "Showing logs for: $service (last $lines lines)"
+    
+    case "$service" in
+        "all")
+            docker compose -f "$SAS_COMPOSE_FILE" logs --tail="$lines"
+            ;;
+        *)
+            docker compose -f "$SAS_COMPOSE_FILE" logs --tail="$lines" "$service"
+            ;;
+    esac
+}
+
+cmd_monitor() {
+    log_section "Solution-Automater-Sandbox Monitoring"
+    
+    echo -e "${CYAN}Real-time system monitoring${NC}"
+    echo "Press Ctrl+C to exit"
+    echo ""
+    
+    while true; do
+        clear
+        echo -e "${PURPLE}=== Solution-Automater-Sandbox Monitor ===${NC}"
+        echo "Updated: $(date)"
+        echo ""
+        
+        cmd_status
+        
+        sleep 5
+    done
+}
+
+# =============================================================================
+# MAINTENANCE COMMANDS
+# =============================================================================
+cmd_update() {
+    log_section "Updating Solution-Automater-Sandbox"
+    
+    log_info "Pulling latest images..."
+    docker compose -f "$SAS_COMPOSE_FILE" pull
+    
+    log_info "Rebuilding services..."
+    docker compose -f "$SAS_COMPOSE_FILE" build --no-cache
+    
+    log_info "Restarting services..."
+    cmd_restart
+    
+    log_success "Update completed!"
+}
+
+cmd_cleanup() {
+    local force="${1:-false}"
+    
+    log_section "Cleaning up Solution-Automater-Sandbox"
+    
+    if [ "$force" != "true" ]; then
+        echo -e "${YELLOW}This will remove:${NC}"
+        echo "• Stopped containers"
+        echo "• Unused networks"
+        echo "• Unused images"
+        echo "• Build cache"
+        echo ""
+        read -p "Continue? (y/N): " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Cleanup cancelled"
+            return 0
+        fi
+    fi
+    
+    log_info "Removing stopped containers..."
+    docker container prune -f
+    
+    log_info "Removing unused networks..."
+    docker network prune -f
+    
+    log_info "Removing unused images..."
+    docker image prune -f
+    
+    log_info "Removing build cache..."
+    docker builder prune -f
+    
+    log_success "Cleanup completed!"
+}
+
+cmd_backup() {
+    local backup_dir="${1:-$SAS_HOME/backups/$(date +%Y%m%d_%H%M%S)}"
+    
+    log_section "Creating backup"
+    
+    log_info "Creating backup directory: $backup_dir"
+    mkdir -p "$backup_dir"
+    
+    # Backup configuration
+    log_info "Backing up configuration..."
+    cp -r "$SAS_HOME" "$backup_dir/sas-home"
+    cp "$SAS_ENV_FILE" "$backup_dir/"
+    
+    # Backup volumes
+    log_info "Backing up volumes..."
+    docker run --rm -v sas-vault-data:/data -v "$backup_dir:/backup" alpine tar czf /backup/vault-data.tar.gz -C /data .
+    docker run --rm -v sas-prometheus-data:/data -v "$backup_dir:/backup" alpine tar czf /backup/prometheus-data.tar.gz -C /data .
+    docker run --rm -v sas-grafana-data:/data -v "$backup_dir:/backup" alpine tar czf /backup/grafana-data.tar.gz -C /data .
+    
+    log_success "Backup created: $backup_dir"
+}
+
+cmd_restore() {
+    local backup_dir="${1:-}"
+    
+    if [ -z "$backup_dir" ]; then
+        log_error "Backup directory required"
+        exit 1
+    fi
+    
+    if [ ! -d "$backup_dir" ]; then
+        log_error "Backup directory not found: $backup_dir"
+        exit 1
+    fi
+    
+    log_section "Restoring from backup"
+    
+    log_warning "This will overwrite current configuration!"
+    read -p "Continue? (y/N): " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Restore cancelled"
+        return 0
+    fi
+    
+    # Stop services
+    cmd_stop
+    
+    # Restore configuration
+    log_info "Restoring configuration..."
+    cp -r "$backup_dir/sas-home/"* "$SAS_HOME/"
+    cp "$backup_dir/.env.solution-automater-sandbox" "$SAS_ENV_FILE"
+    
+    # Restore volumes
+    log_info "Restoring volumes..."
+    docker run --rm -v sas-vault-data:/data -v "$backup_dir:/backup" alpine tar xzf /backup/vault-data.tar.gz -C /data
+    docker run --rm -v sas-prometheus-data:/data -v "$backup_dir:/backup" alpine tar xzf /backup/prometheus-data.tar.gz -C /data
+    docker run --rm -v sas-grafana-data:/data -v "$backup_dir:/backup" alpine tar xzf /backup/grafana-data.tar.gz -C /data
+    
+    log_success "Restore completed!"
+    log_info "Start services with: sas start"
+}
+
+# =============================================================================
+# HELP AND INFORMATION COMMANDS
+# =============================================================================
+cmd_help() {
+    cat << 'EOF'
+Solution-Automater-Sandbox (SAS) - Enterprise AI Agent Orchestration Platform
+
+USAGE:
+  sas [COMMAND] [OPTIONS]
+
+COMMANDS:
+  Setup & Management:
+    setup                     - One-command setup with validation
+    start [SERVICE]           - Start all services or specific service
+    stop [SERVICE]            - Stop all services or specific service
+    restart [SERVICE]         - Restart all services or specific service
+    status                    - Show system status and health checks
+    
+  Agent Management:
+    agent start [TYPE] [NAME] - Start an AI agent
+    agent stop [NAME]         - Stop an AI agent
+    agent list                - List active agents
+    agent logs [NAME]         - Show agent logs
+    agent deploy [WORKFLOW]   - Deploy workflow to agents
+    
+  Database Operations:
+    db connect [TYPE]         - Connect to database (mysql|postgres|mongodb)
+    db query [TYPE] [SQL]     - Execute query safely
+    db status                 - Show database proxy status
+    db test                   - Test database connections
+    
+  Cloud Integration:
+    cloud fabric              - Microsoft Fabric operations
+    cloud aws                 - AWS operations
+    cloud azure               - Azure operations (planned)
+    cloud status              - Show cloud integration status
+    
+  Security & Compliance:
+    security scan             - Scan containers for vulnerabilities
+    security audit            - Show audit logs
+    security status           - Show security service status
+    security logs [SERVICE]   - Show security logs
+    
+  Session Management:
+    session new [NAME]        - Create new session
+    session continue [NAME]   - Continue existing session
+    session list              - List active sessions
+    session cleanup [HOURS]   - Cleanup old sessions
+    
+  Monitoring & Logs:
+    logs [SERVICE] [LINES]    - Show service logs
+    monitor                   - Real-time system monitoring
+    
+  Maintenance:
+    update                    - Update all services
+    cleanup [--force]         - Clean up unused resources
+    backup [DIR]              - Create system backup
+    restore [DIR]             - Restore from backup
+    
+  Information:
+    version                   - Show version information
+    help                      - Show this help message
+
+EXAMPLES:
+  sas setup                           # Initial setup
+  sas start                           # Start all services
+  sas agent start ml-engineer        # Start ML engineering agent
+  sas db connect mysql                # Connect to MySQL safely
+  sas cloud fabric                    # Check Fabric integration
+  sas security scan                   # Security vulnerability scan
+  sas monitor                         # Real-time monitoring
+
+ACCESS POINTS:
+  • Main Interface: https://localhost
+  • Monitoring Dashboard: https://localhost/grafana
+  • Orchestrator API: https://localhost/orchestrator
+
+For more information, visit: https://github.com/solution-automater-sandbox
+EOF
+}
+
+cmd_version() {
+    echo -e "${PURPLE}Solution-Automater-Sandbox${NC}"
+    echo -e "Version: ${GREEN}$SAS_VERSION${NC}"
+    echo -e "Docker Compose: $(docker compose version --short 2>/dev/null || echo 'not found')"
+    echo -e "Docker: $(docker --version | cut -d' ' -f3 | tr -d ',')"
+    echo -e "Platform: $(uname -s -m)"
+    
+    if [ -f "$SAS_ENV_FILE" ]; then
+        echo -e "Environment: ${GREEN}configured${NC}"
+    else
+        echo -e "Environment: ${RED}not configured${NC} (run 'sas setup')"
+    fi
+    
+    if docker ps --format "{{.Names}}" | grep -q "sas-"; then
+        local running_count=$(docker ps --format "{{.Names}}" | grep -c "sas-" || echo "0")
+        echo -e "Services: ${GREEN}$running_count running${NC}"
+    else
+        echo -e "Services: ${RED}not running${NC}"
+    fi
+}
+
+# =============================================================================
+# MAIN COMMAND DISPATCHER
+# =============================================================================
+main() {
+    # Handle no arguments
+    if [ $# -eq 0 ]; then
+        cmd_help
+        exit 0
+    fi
+    
+    local command="$1"
+    shift
+    
+    case "$command" in
+        # Setup and management
+        "setup")
+            cmd_setup "$@"
+            ;;
+        "start")
+            cmd_start "$@"
+            ;;
+        "stop")
+            cmd_stop "$@"
+            ;;
+        "restart")
+            cmd_restart "$@"
+            ;;
+        "status")
+            cmd_status "$@"
+            ;;
+        
+        # Agent management
+        "agent")
+            cmd_agent "$@"
+            ;;
+        
+        # Database operations
+        "db")
+            cmd_db "$@"
+            ;;
+        
+        # Cloud integration
+        "cloud")
+            cmd_cloud "$@"
+            ;;
+        
+        # Security
+        "security")
+            cmd_security "$@"
+            ;;
+        
+        # Session management
+        "session")
+            cmd_session "$@"
+            ;;
+        
+        # Monitoring and logs
+        "logs")
+            cmd_logs "$@"
+            ;;
+        "monitor")
+            cmd_monitor "$@"
+            ;;
+        
+        # Maintenance
+        "update")
+            cmd_update "$@"
+            ;;
+        "cleanup")
+            cmd_cleanup "$@"
+            ;;
+        "backup")
+            cmd_backup "$@"
+            ;;
+        "restore")
+            cmd_restore "$@"
+            ;;
+        
+        # Information
+        "version")
+            cmd_version "$@"
+            ;;
+        "help"|"--help"|"-h")
+            cmd_help "$@"
+            ;;
+        
+        # Legacy compatibility
+        "claude-docker")
+            log_info "Legacy command detected. Use 'sas start claude-sandbox' instead."
+            cmd_start claude-sandbox
+            ;;
+        
+        *)
+            log_error "Unknown command: $command"
+            echo -e "\n${CYAN}Run 'sas help' for available commands${NC}"
+            exit 1
+            ;;
+    esac
+}
+
+# Handle script being sourced vs executed
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
