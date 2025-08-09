@@ -6,10 +6,10 @@
 
 **Enterprise AI Agent Orchestration Platform**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/solution-automater-sandbox/claude-docker)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/svorwerk-flextg/solution-automater-sandbox)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-supported-blue.svg)](https://www.docker.com/)
-[![CI/CD](https://github.com/solution-automater-sandbox/claude-docker/workflows/CI/badge.svg)](https://github.com/solution-automater-sandbox/claude-docker/actions)
+[![CI/CD](https://github.com/svorwerk-flextg/solution-automater-sandbox/workflows/CI/badge.svg)](https://github.com/svorwerk-flextg/solution-automater-sandbox/actions)
 
 *Production-ready • Secure • Scalable • Team-enabled*
 
@@ -76,7 +76,7 @@
 
 ```bash
 # Install Solution-Automater-Sandbox
-curl -sSL https://raw.githubusercontent.com/solution-automater-sandbox/claude-docker/main/scripts/install-solution-automater-sandbox.sh | bash
+curl -sSL https://raw.githubusercontent.com/svorwerk-flextg/solution-automater-sandbox/main/scripts/install-solution-automater-sandbox.sh | bash
 
 # Start the platform
 sas start
@@ -89,7 +89,7 @@ open https://localhost
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/solution-automater-sandbox/claude-docker.git
+git clone https://github.com/svorwerk-flextg/solution-automater-sandbox.git
 cd claude-docker
 
 # 2. Run setup
@@ -476,7 +476,7 @@ sas agent start worker --count 3
 - **Status**: `sas status`
 - **Health**: `sas security status`
 - **Documentation**: https://docs.solution-automater-sandbox.com
-- **GitHub Issues**: https://github.com/solution-automater-sandbox/claude-docker/issues
+- **GitHub Issues**: https://github.com/svorwerk-flextg/solution-automater-sandbox/issues
 
 ---
 
@@ -510,7 +510,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ```bash
 # Clone repository
-git clone https://github.com/solution-automater-sandbox/claude-docker.git
+git clone https://github.com/svorwerk-flextg/solution-automater-sandbox.git
 cd claude-docker
 
 # Install development dependencies
